@@ -1,0 +1,2403 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Rafale Mission Alpine</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:#05080f;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  min-height:100vh;
+  font-family:'Courier New', monospace;
+  user-select:none;
+}
+#topbar {
+  width:900px;
+  display:flex;
+  justify-content:space-between;
+  padding:5px 12px;
+  color:#4488aa;
+  font-size:11px;
+  letter-spacing:3px;
+}
+canvas {
+  display:block;
+  image-rendering:pixelated;
+  box-shadow:0 0 40px rgba(0,120,255,0.2);
+}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <span>◈ DASSAULT AVIATION — MISSION ALPINE ◈</span>
+  <span id="fpsOut">-- FPS</span>
+</div>
+<canvas id="c"></canvas>
+<script>
+/* ======================================================
+   INIT
+====================================================== */
+const canvas = document.getElementById("c");
+const ctx    = canvas.getContext("2d");
+const W = 900, H = 540;
+canvas.width = W; canvas.height = H;
+const GROUND_Y = 460;
+
+/* ======================================================
+   GAME STATE
+====================================================== */
+let state = "start";
+let score = 0;
+let highScore = Number(localStorage.getItem("rafaleHS3") || 0);
+let frame = 0;
+let lastTs = 0, fpsBuf = [];
+
+/* ======================================================
+   GRADES MILITAIRES (un grade tous les 20 points)
+====================================================== */
+const GRADES = [
+  { min:0,   label:"Aviateur",         short:"AV",  color:"#8899aa", stars:0 },
+  { min:20,  label:"Caporal",          short:"CPL", color:"#88aa88", stars:1 },
+  { min:40,  label:"Sergent",          short:"SGT", color:"#aaaa66", stars:1 },
+  { min:60,  label:"Adjudant",         short:"ADJ", color:"#ccaa44", stars:2 },
+  { min:80,  label:"Sous-Lieutenant",  short:"SLT", color:"#ddbb44", stars:2 },
+  { min:100, label:"Lieutenant",       short:"LT",  color:"#ddcc55", stars:2 },
+  { min:120, label:"Capitaine",        short:"CAP", color:"#eedd66", stars:3 },
+  { min:140, label:"Commandant",       short:"CDT", color:"#ffcc44", stars:3 },
+  { min:160, label:"Lieutenant-Col.", short:"LTC", color:"#ffaa33", stars:4 },
+  { min:180, label:"Colonel",          short:"COL", color:"#ff9922", stars:4 },
+  { min:200, label:"Général de Brig.", short:"GB",  color:"#ff8811", stars:5 },
+  { min:240, label:"Général de Div.",  short:"GD",  color:"#ff7700", stars:5 },
+  { min:300, label:"Général de Corps", short:"GC",  color:"#ff5500", stars:5 },
+  { min:400, label:"Général d'Armée",  short:"GA",  color:"#ff3300", stars:5 },
+  { min:500, label:"Maréchal de Fr.",  short:"MF",  color:"#ff0000", stars:6 },
+];
+
+function getGrade(s) {
+  let g = GRADES[0];
+  for(const gr of GRADES) { if(s >= gr.min) g = gr; else break; }
+  return g;
+}
+function getNextGrade(s) {
+  for(const gr of GRADES) { if(s < gr.min) return gr; }
+  return null;
+}
+
+/* Grade au moment de la mort (pour l'écran game over) */
+let deathGrade = GRADES[0];
+let prevGrade  = GRADES[0]; // pour détecter la montée en grade
+let gradeUpMsg = 0;         // timer d'affichage du message de promotion
+
+/* ======================================================
+   MÉDAILLES (attribuées à la mort selon le score)
+====================================================== */
+const MEDALS = [
+  {
+    min: 5,
+    name: "Croix du Mérite",
+    desc: "Première mission accomplie",
+    color: "#c87941",
+    rimColor: "#8b5a2b",
+    symbol: "✦",
+    ribbon: ["#c0392b","#ffffff","#2980b9"]
+  },
+  {
+    min: 20,
+    name: "Médaille Aéronautique",
+    desc: "Vol de précision confirmé",
+    color: "#b8b8b8",
+    rimColor: "#888",
+    symbol: "✈",
+    ribbon: ["#2980b9","#27ae60","#2980b9"]
+  },
+  {
+    min: 50,
+    name: "Croix de la Valeur",
+    desc: "Bravoure au combat",
+    color: "#c0a030",
+    rimColor: "#8a7020",
+    symbol: "✚",
+    ribbon: ["#e74c3c","#f1c40f","#e74c3c"]
+  },
+  {
+    min: 100,
+    name: "Légion d'Honneur",
+    desc: "Excellence opérationnelle",
+    color: "#e8c040",
+    rimColor: "#c0a020",
+    symbol: "★",
+    ribbon: ["#c0392b","#f9f9f9","#c0392b"]
+  },
+  {
+    min: 200,
+    name: "Ordre National du Mérite",
+    desc: "Service exceptionnel à la nation",
+    color: "#e0e0e0",
+    rimColor: "#aaa",
+    symbol: "⬡",
+    ribbon: ["#2c3e50","#e74c3c","#2c3e50"]
+  },
+  {
+    min: 350,
+    name: "Médaille Militaire",
+    desc: "Héros de la République",
+    color: "#ffe060",
+    rimColor: "#c8a800",
+    symbol: "♛",
+    ribbon: ["#27ae60","#f9f9f9","#27ae60"]
+  },
+  {
+    min: 500,
+    name: "Grand Croix d'Honneur",
+    desc: "Légende de l'Aviation française",
+    color: "#ff9922",
+    rimColor: "#cc6600",
+    symbol: "✸",
+    ribbon: ["#e74c3c","#f39c12","#e74c3c"]
+  },
+];
+
+function getMedalsEarned(s) {
+  return MEDALS.filter(m => s >= m.min);
+}
+
+/* ======================================================
+   DESSIN D'UNE MÉDAILLE (canvas)
+====================================================== */
+function drawMedal(mx, my, medal, size, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  const r = size * 0.42;
+
+  // Ruban (3 bandes verticales)
+  const ribW = size * 0.28;
+  const ribH = size * 0.32;
+  const bw = ribW / 3;
+  for(let i=0; i<3; i++) {
+    ctx.fillStyle = medal.ribbon[i];
+    ctx.fillRect(mx - ribW/2 + i*bw, my - r - ribH, bw, ribH);
+  }
+  // Attache ruban
+  ctx.fillStyle = medal.rimColor;
+  ctx.fillRect(mx - ribW/2 - 2, my - r - ribH - 4, ribW+4, 5);
+
+  // Ombre portée médaille
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 3;
+
+  // Cercle extérieur (bord)
+  ctx.beginPath(); ctx.arc(mx, my, r+3, 0, Math.PI*2);
+  ctx.fillStyle = medal.rimColor; ctx.fill();
+
+  // Dentelure extérieure
+  const teeth = 24;
+  ctx.fillStyle = medal.rimColor;
+  for(let i=0; i<teeth; i++) {
+    const a = (i/teeth)*Math.PI*2;
+    const tx = mx + Math.cos(a)*(r+2);
+    const ty = my + Math.sin(a)*(r+2);
+    ctx.beginPath(); ctx.arc(tx, ty, 2.5, 0, Math.PI*2); ctx.fill();
+  }
+
+  ctx.shadowColor = "transparent";
+
+  // Corps de la médaille
+  const grad = ctx.createRadialGradient(mx-r*0.25, my-r*0.25, 0, mx, my, r);
+  grad.addColorStop(0, lightenColor(medal.color, 40));
+  grad.addColorStop(0.5, medal.color);
+  grad.addColorStop(1, medal.rimColor);
+  ctx.beginPath(); ctx.arc(mx, my, r, 0, Math.PI*2);
+  ctx.fillStyle = grad; ctx.fill();
+
+  // Anneau interne
+  ctx.beginPath(); ctx.arc(mx, my, r*0.78, 0, Math.PI*2);
+  ctx.strokeStyle = medal.rimColor; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Symbole central
+  ctx.fillStyle = medal.rimColor;
+  ctx.font = `bold ${size*0.34}px serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(medal.symbol, mx, my+1);
+  ctx.textBaseline = "alphabetic";
+
+  ctx.restore();
+}
+
+function lightenColor(hex, amt) {
+  const n = parseInt(hex.replace("#",""), 16);
+  const r = Math.min(255, (n>>16)+amt);
+  const g = Math.min(255, ((n>>8)&0xff)+amt);
+  const b = Math.min(255, (n&0xff)+amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+/* ======================================================
+   DESSIN DES ÉTOILES DE GRADE
+====================================================== */
+function drawGradeStars(cx, cy, count, color, size) {
+  const spacing = size * 2.2;
+  const totalW  = (count - 1) * spacing;
+  for(let i=0; i<count; i++) {
+    const sx = cx - totalW/2 + i*spacing;
+    drawStar(sx, cy, size, color);
+  }
+}
+
+function drawStar(cx, cy, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for(let i=0; i<10; i++) {
+    const a = (i/10)*Math.PI*2 - Math.PI/2;
+    const rad = i%2===0 ? r : r*0.4;
+    if(i===0) ctx.moveTo(cx+Math.cos(a)*rad, cy+Math.sin(a)*rad);
+    else ctx.lineTo(cx+Math.cos(a)*rad, cy+Math.sin(a)*rad);
+  }
+  ctx.closePath(); ctx.fill();
+}
+
+/* ======================================================
+   ÉPAULETTE GRADE dans le HUD
+====================================================== */
+function drawGradeHUD() {
+  const g = getGrade(score);
+  const next = getNextGrade(score);
+  const panX = W - 210, panY = 10;
+  const panW = 200, panH = 75;
+
+  // Panneau
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(panX, panY, panW, panH);
+  ctx.strokeStyle = g.color + "88";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panX, panY, panW, panH);
+
+  // Label grade
+  ctx.fillStyle = g.color;
+  ctx.font = "bold 13px 'Courier New'";
+  ctx.textAlign = "left";
+  ctx.fillText(g.label.toUpperCase(), panX+10, panY+22);
+
+  // Étoiles
+  if(g.stars > 0) drawGradeStars(panX+panW/2, panY+42, Math.min(g.stars,5), g.color, 7);
+  if(g.stars === 6) {
+    drawGradeStars(panX+panW/2, panY+36, 3, g.color, 7);
+    drawGradeStars(panX+panW/2, panY+50, 3, g.color, 7);
+  }
+
+  // Barre de progression vers grade suivant
+  if(next) {
+    const prog = (score - g.min) / (next.min - g.min);
+    const barX = panX+8, barY = panY+58, barW = panW-16, barH = 7;
+    ctx.fillStyle = "rgba(255,255,255,0.1)";
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = g.color;
+    ctx.fillRect(barX, barY, barW*prog, barH);
+    ctx.strokeStyle = g.color+"55";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.fillStyle = "#8899aa";
+    ctx.font = "9px 'Courier New'";
+    ctx.fillText(`→ ${next.label} (${next.min} pts)`, barX, panY+76);
+  } else {
+    ctx.fillStyle = g.color;
+    ctx.font = "bold 10px 'Courier New'";
+    ctx.fillText("✦ RANG MAXIMUM ✦", panX+10, panY+72);
+  }
+
+  // Message de montée en grade
+  if(gradeUpMsg > 0) {
+    gradeUpMsg--;
+    const alpha = Math.min(1, gradeUpMsg/30);
+    const g2 = getGrade(score);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(W/2-180, 10, 360, 48);
+    ctx.strokeStyle = g2.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W/2-180, 10, 360, 48);
+    ctx.fillStyle = g2.color;
+    ctx.font = "bold 14px 'Courier New'";
+    ctx.textAlign = "center";
+    ctx.fillText(`▲ PROMOTION : ${g2.label.toUpperCase()} ▲`, W/2, 30);
+    if(g2.stars>0) drawGradeStars(W/2, 47, Math.min(g2.stars,6), g2.color, 6);
+    ctx.restore();
+  }
+}
+
+/* ======================================================
+   JET
+   Le jet est positionné par (x, y) = coin haut-gauche
+   du sprite. Largeur = 20 cellules * S, Hauteur = 9 cellules * S
+====================================================== */
+const S = 4;            // taille d'un pixel art "pixel"
+const JW = 20*S;        // largeur sprite jet
+const JH = 9*S;         // hauteur sprite jet
+
+const jet = {
+  x: 140, y: 220,
+  vy: 0,
+  gravity: 0.36,
+  lift: -7.5,
+  tick: 0,          // pour animations
+  dead: false
+};
+
+function resetJet() {
+  jet.x = 140; jet.y = 220;
+  jet.vy = 0; jet.tick = 0; jet.dead = false;
+}
+
+/* ======================================================
+   DESSIN DU RAFALE — pixel art soigné
+   Système de coordonnées : (col, row) dans la grille S
+   Origine = coin haut-gauche du sprite
+
+   Plan de la grille (20 col × 9 row) :
+   row 0 : dérive verticale + cockpit
+   row 1 : cockpit + dessus fuselage
+   row 2 : fuselage plein
+   row 3 : fuselage plein (ligne centrale)
+   row 4 : fuselage plein
+   row 5 : ventre fuselage + aile delta
+   row 6 : aile delta
+   row 7 : aile delta pointe + missiles
+   row 8 : missiles pointe
+====================================================== */
+
+/* Palette */
+const P = {
+  // Gris aluminium
+  g0:"#dce4ee", g1:"#b8c8d8", g2:"#8fa0b0", g3:"#6a7a88", g4:"#4a5a68", g5:"#2e3a48",
+  // Cockpit
+  ck:"#0c2040", cr:"rgba(150,210,255,0.5)",
+  // Aile
+  w0:"#506070", w1:"#607888", w2:"#384850",
+  // Flamme
+  fl0:"#ff4400", fl1:"#ff9900", fl2:"#ffdd00", fl3:"#00aaff", fl4:"#0055ff",
+  // Cocarde
+  rouge:"#e8001a", blanc:"#ffffff", bleu:"#002395",
+  // Missile
+  ms:"#a0a8b0",
+  // Noir
+  noir:"#10181f",
+};
+
+function drawJetSprite(ox, oy) {
+  // helper: rempli une cellule
+  function cell(c, r, color, cw, ch) {
+    if(cw===undefined) cw=1;
+    if(ch===undefined) ch=1;
+    ctx.fillStyle = color;
+    ctx.fillRect(ox + c*S, oy + r*S, S*cw, S*ch);
+  }
+  // helper: polygone arbitraire (coordonnées en pixels depuis ox,oy)
+  function poly(pts, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(ox+pts[0], oy+pts[1]);
+    for(let i=2; i<pts.length; i+=2) ctx.lineTo(ox+pts[i], oy+pts[i+1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /* ---- POSTCOMBUSTION ---- */
+  jet.tick++;
+  const fl = jet.tick % 8 < 4;
+  const flen = (fl ? 5 : 4) * S;
+  // Flamme extérieure
+  poly([0,3*S,  0,6*S,  -flen,5*S,  -flen,4*S], P.fl0);
+  poly([0,3.5*S,0,5.5*S,-flen+S,5*S,-flen+S,4*S], P.fl1);
+  poly([0,4*S,  0,5*S,  -(flen-S),4.8*S, -(flen-S),4.2*S], P.fl2);
+  // Cœur bleu
+  poly([0,4*S, 0,5*S, -2*S,4.7*S, -2*S,4.3*S], P.fl3);
+  cell(-1, 4, P.fl4);
+
+  /* ---- TUYÈRE ---- */
+  cell(0, 3, P.g4); cell(0, 4, P.g4); cell(0, 5, P.g5);
+  cell(0, 2, P.g5); cell(0, 6, P.g5);
+
+  /* ---- FUSELAGE PRINCIPAL ---- */
+  // col 1-2 : arrière corps
+  cell(1, 3, P.g4); cell(1, 4, P.g3); cell(1, 5, P.g3); cell(1, 6, P.g4);
+  cell(2, 2, P.g4); cell(2, 3, P.g2); cell(2, 4, P.g1); cell(2, 5, P.g2); cell(2, 6, P.g3);
+  // col 3-4
+  cell(3, 2, P.g3); cell(3, 3, P.g1); cell(3, 4, P.g0); cell(3, 5, P.g1); cell(3, 6, P.g2);
+  cell(4, 2, P.g2); cell(4, 3, P.g0); cell(4, 4, P.g0); cell(4, 5, P.g1); cell(4, 6, P.g2);
+  // col 5-6-7 (zone cockpit)
+  cell(5, 2, P.g2); cell(5, 3, P.g0); cell(5, 4, P.g0); cell(5, 5, P.g1); cell(5, 6, P.g3);
+  cell(6, 2, P.g2); cell(6, 3, P.g1); cell(6, 4, P.g0); cell(6, 5, P.g1); cell(6, 6, P.g3);
+  cell(7, 2, P.g2); cell(7, 3, P.g1); cell(7, 4, P.g1); cell(7, 5, P.g2); cell(7, 6, P.g4);
+  // col 8-9
+  cell(8, 3, P.g3); cell(8, 4, P.g2); cell(8, 5, P.g2); cell(8, 6, P.g4);
+  cell(9, 3, P.g3); cell(9, 4, P.g2); cell(9, 5, P.g3); cell(9, 6, P.g4);
+  // col 10-12 (nez qui s'affine)
+  cell(10, 3, P.g3); cell(10, 4, P.g2); cell(10, 5, P.g3);
+  cell(11, 3, P.g3); cell(11, 4, P.g2); cell(11, 5, P.g3);
+  cell(12, 3, P.g4); cell(12, 4, P.g3); cell(12, 5, P.g4);
+  // col 13-15 (cône nez)
+  cell(13, 3, P.g4); cell(13, 4, P.g3);
+  cell(14, 3, P.g4); cell(14, 4, P.g4);
+  cell(15, 4, P.g5);
+  // Pointe nez (triangle)
+  poly([15*S, 4*S+1, 15*S, 5*S-1, 16*S, 4.5*S], P.g5);
+
+  /* ---- LIGNE DORSALE ---- */
+  ctx.fillStyle = P.g3;
+  ctx.fillRect(ox+1*S, oy+2*S, 9*S, 2);
+
+  /* ---- DÉRIVE VERTICALE ---- */
+  // Construite AU-DESSUS du fuselage (row -1, -2, -3)
+  poly([2*S,2*S, 4*S,2*S, 5*S,0, 1*S,0], P.g3);          // base dérive
+  poly([2*S,2*S, 3*S,2*S, 3.5*S,0, 1*S,0], P.g2);        // reflet dérive
+  poly([3.5*S,-1*S, 5*S,0, 4*S,2*S, 2.5*S,2*S, 3*S,0], P.g4); // bord arrière dérive
+
+  /* ---- PETIT CANARD (avant, row 2-3) ---- */
+  poly([11*S,2*S, 14*S,2*S, 12*S,0, 10*S,1*S], P.w0);
+  poly([12*S,2*S, 14*S,2*S, 12.5*S,0.5*S, 11*S,1.5*S], P.w1);
+
+  /* ---- COCKPIT ---- */
+  // Cadre
+  cell(5, 1, P.noir); cell(6, 1, P.noir); cell(7, 1, P.noir); cell(8, 1, P.noir);
+  cell(4, 2, P.noir); cell(9, 2, P.noir);
+  // Vitre intérieure
+  poly([5*S,1*S, 9*S,1*S, 9*S,2*S, 4*S,2*S], P.ck);
+  // Reflet vitre
+  ctx.fillStyle = P.cr;
+  ctx.fillRect(ox+5*S, oy+1*S+1, 2*S, Math.ceil(S*0.4));
+  ctx.fillRect(ox+7*S+1, oy+1*S+2, S, Math.ceil(S*0.3));
+
+  /* ---- GRANDE AILE DELTA ---- */
+  // Corps de l'aile (dessus)
+  poly([1*S,5*S, 10*S,5*S, 7*S,9*S, 0,9*S], P.w1);
+  // Dessous aile (plus sombre)
+  poly([1*S,6*S, 10*S,6*S, 7*S,9*S, 0,9*S], P.w0);
+  // Ombre bord d'attaque
+  poly([0,7*S, 1*S,5*S, 2*S,5*S, 0,8*S], P.w2);
+  // Nervures
+  ctx.strokeStyle = P.w2;
+  ctx.lineWidth = 1;
+  for(let n=0; n<4; n++) {
+    const rx = ox + (2+n*2)*S;
+    ctx.beginPath();
+    ctx.moveTo(rx, oy+5*S);
+    ctx.lineTo(rx - n*S*0.6, oy+8.5*S);
+    ctx.stroke();
+  }
+  // Aileron de bord de fuite
+  poly([8*S,6*S, 10*S,5*S, 9*S,8*S, 7*S,8*S], P.w2);
+
+  /* ---- PRISE D'AIR ventrale ---- */
+  ctx.fillStyle = P.noir;
+  ctx.fillRect(ox+5*S, oy+7*S, 4*S, S);
+  ctx.fillStyle = "#050e18";
+  ctx.fillRect(ox+6*S, oy+7*S, 2*S, S-1);
+
+  /* ---- MISSILES ---- */
+  // Missile 1 (MICA)
+  poly([1*S,7*S, 6*S,7*S, 6*S,7*S+3, 1*S,7*S+3], P.ms);
+  ctx.fillStyle="#c0c8d0";
+  ctx.beginPath(); ctx.arc(ox+S, oy+7*S+1, 2, 0, Math.PI*2); ctx.fill();
+  // Empennage missile 1
+  poly([5*S,7*S, 6*S,7*S, 6*S,6*S+2, 5*S,6*S+2], "#888");
+  poly([5*S,7*S+3, 6*S,7*S+3, 6*S,8*S, 5*S,8*S], "#888");
+
+  // Missile 2 (Météor) — plus en bas
+  poly([1*S,8*S, 7*S,8*S, 7*S,8*S+3, 1*S,8*S+3], P.ms);
+  ctx.fillStyle="#b0b8c0";
+  ctx.beginPath(); ctx.arc(ox+S, oy+8*S+1, 2, 0, Math.PI*2); ctx.fill();
+  // Rampe d'entrée Météor
+  ctx.fillStyle="#606878";
+  ctx.fillRect(ox+3*S, oy+8*S, S, 2);
+  poly([6*S,8*S, 7*S,8*S, 7*S,7*S+2, 6*S,7*S+2], "#888");
+  poly([6*S,8*S+3, 7*S,8*S+3, 7*S,9*S, 6*S,9*S], "#888");
+
+  /* ---- PYLÔNES SOUS AILE ---- */
+  cell(2, 5, P.g4); cell(2, 6, P.g4);
+  cell(3, 5, P.g4); cell(3, 6, P.g4);
+
+  /* ---- COCARDE TRICOLORE ---- */
+  const cx = ox + 5*S + S/2|0;
+  const cy = oy + 4*S + S/2|0;
+  const cr = S * 0.9;
+  ctx.beginPath(); ctx.arc(cx,cy,cr,0,Math.PI*2); ctx.fillStyle=P.rouge; ctx.fill();
+  ctx.beginPath(); ctx.arc(cx,cy,cr*0.65,0,Math.PI*2); ctx.fillStyle=P.blanc; ctx.fill();
+  ctx.beginPath(); ctx.arc(cx,cy,cr*0.34,0,Math.PI*2); ctx.fillStyle=P.bleu; ctx.fill();
+
+  /* ---- POD DE GUERRE ÉLECTRONIQUE ---- */
+  poly([8*S,7*S+1, 10*S,7*S+1, 10*S,7*S+4, 8*S,7*S+4], "#3a4858");
+  ctx.fillStyle="#4a5868";
+  ctx.fillRect(ox+8*S, oy+7*S+1, S, 2);
+  // Antenne
+  ctx.strokeStyle="#667788"; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(ox+9*S, oy+7*S+1);
+  ctx.lineTo(ox+9*S, oy+6*S+1);
+  ctx.stroke();
+}
+
+/* ======================================================
+   HITBOX du Rafale
+   Rectangle conservateur au centre du sprite
+====================================================== */
+function getJetBox() {
+  return {
+    x: jet.x + S*2,
+    y: jet.y + S*2,
+    w: JW - S*5,
+    h: JH - S*4
+  };
+}
+
+/* ======================================================
+   FOND MONTAGNARD
+====================================================== */
+const skyGrad = ctx.createLinearGradient(0,0,0,H);
+skyGrad.addColorStop(0,"#070c1c");
+skyGrad.addColorStop(0.35,"#0d1e3a");
+skyGrad.addColorStop(0.7,"#183a6a");
+skyGrad.addColorStop(1,"#2a5580");
+
+function makeMtnPts(seed, n, baseY, amp) {
+  const pts = [];
+  for(let i=0; i<=n; i++) {
+    const a = i*0.75 + seed;
+    const y = baseY
+      - Math.abs(Math.sin(a)*amp)
+      - Math.abs(Math.sin(a*1.6)*amp*0.4)
+      - Math.abs(Math.sin(a*0.35)*amp*0.65);
+    pts.push({x:(i/n)*(W+400), y});
+  }
+  return pts;
+}
+
+const bgLayers = [
+  {pts:makeMtnPts(1.1,10,230,130), color:"#253550", snow:true,  speed:0.2, off:0},
+  {pts:makeMtnPts(2.7,14,285,100), color:"#3d2a1a", snow:false, speed:0.5, off:300},
+  {pts:makeMtnPts(0.4,17,330, 80), color:"#2a1c10", snow:false, speed:0.9, off:100},
+  {pts:makeMtnPts(4.2,22,370, 55), color:"#18130a", snow:false, speed:1.5, off:500},
+  {pts:makeMtnPts(6.0,30,400, 30), color:"#0e1108", snow:false, speed:2.2, off:200},
+];
+
+function drawMtnLayer(l) {
+  const total = W+400;
+  const off = (l.off * l.speed) % total;
+  for(let rep=-1; rep<=1; rep++) {
+    const sx = rep*total - off;
+    ctx.beginPath();
+    ctx.moveTo(sx, H);
+    for(let i=0; i<l.pts.length; i++) {
+      const px = l.pts[i].x + sx, py = l.pts[i].y;
+      if(i===0) { ctx.lineTo(px, py); continue; }
+      const prev = l.pts[i-1];
+      ctx.bezierCurveTo(
+        prev.x+sx+(l.pts[i].x-prev.x)*0.5, prev.y,
+        px-(l.pts[i].x-prev.x)*0.5, py,
+        px, py
+      );
+    }
+    ctx.lineTo(sx+total, H);
+    ctx.closePath();
+    ctx.fillStyle = l.color;
+    ctx.fill();
+
+    if(l.snow) {
+      ctx.beginPath();
+      for(let i=0; i<l.pts.length; i++) {
+        const px = l.pts[i].x+sx, py = l.pts[i].y+38;
+        if(i===0) { ctx.moveTo(px,py); ctx.lineTo(px, l.pts[i].y); continue; }
+        const prev = l.pts[i-1];
+        ctx.bezierCurveTo(
+          prev.x+sx+(l.pts[i].x-prev.x)*0.5, prev.y,
+          px-(l.pts[i].x-prev.x)*0.5, l.pts[i].y,
+          px, l.pts[i].y
+        );
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(215,232,255,0.75)";
+      ctx.fill();
+    }
+  }
+}
+
+function drawPines(l) {
+  const total = W+400;
+  const off = (l.off * l.speed) % total;
+  for(let rep=-1; rep<=1; rep++) {
+    for(let i=1; i<l.pts.length; i++) {
+      const bx = l.pts[i].x + rep*total - off;
+      const by = l.pts[i].y;
+      if(bx < -20 || bx > W+20) continue;
+      const h = 12 + Math.abs(Math.sin(i*1.9))*8;
+      const w = 5 + Math.abs(Math.sin(i*0.7))*3;
+      ctx.beginPath();
+      ctx.moveTo(bx, by-h);
+      ctx.lineTo(bx-w, by);
+      ctx.lineTo(bx+w, by);
+      ctx.closePath();
+      ctx.fillStyle = "#0b1a0c"; ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(bx,by-h); ctx.lineTo(bx,by); ctx.lineTo(bx+w,by);
+      ctx.closePath();
+      ctx.fillStyle = "#111f12"; ctx.fill();
+    }
+  }
+}
+
+function drawBackground() {
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0,0,W,H);
+  // Étoiles
+  for(let s=0; s<60; s++) {
+    ctx.fillStyle = `rgba(255,255,255,${0.03+0.03*Math.sin(frame*0.02+s)})`;
+    ctx.fillRect(((s*137+frame*0.04)|0)%W, ((s*79)|0)%180, 1, 1);
+  }
+  for(const l of bgLayers) l.off++;
+  bgLayers.forEach(l => drawMtnLayer(l));
+  drawPines(bgLayers[4]);
+  drawMtnLayer(bgLayers[4]);
+
+  // Sol herbu
+  const gGrad = ctx.createLinearGradient(0,GROUND_Y,0,H);
+  gGrad.addColorStop(0,"#163210");
+  gGrad.addColorStop(0.5,"#0e2209");
+  gGrad.addColorStop(1,"#070e05");
+  ctx.fillStyle = gGrad;
+  ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
+  // Petits rochers
+  for(let r=0; r<20; r++) {
+    const rx = ((r*97+frame*2)%(W+80))-40;
+    ctx.fillStyle="rgba(18,40,12,0.7)";
+    ctx.fillRect(rx|0, GROUND_Y, 12+(r%4)*7, 4);
+  }
+}
+
+/* ======================================================
+   TOURS RADAR
+====================================================== */
+let towers = [];
+const TOWER_W = 60;   // largeur de chaque pilier
+
+function createTower() {
+  const gap    = 175;
+  const minTop = 80;
+  const maxTop = GROUND_Y - gap - 80;
+  const topH   = Math.random()*(maxTop-minTop)+minTop;
+  towers.push({
+    x:      W+10,
+    topH,                     // hauteur du pilier haut (depuis y=0)
+    botY:   topH + gap,       // y où commence le pilier bas
+    botH:   H - (topH+gap),   // hauteur pilier bas
+    passed: false,
+    dishA:  Math.random()*Math.PI*2,
+    dishSpd:0.022 + Math.random()*0.018,
+    seed:   Math.random()*999|0
+  });
+}
+
+function drawRadarTower(t) {
+  const x = t.x;
+
+  /* ---- PILIER HAUT ---- */
+  drawPillar(x, 0, TOWER_W, t.topH, t.seed, true);
+
+  /* ---- PARABOLE HAUT ---- */
+  t.dishA += t.dishSpd;
+  drawDish(x + TOWER_W/2, t.topH - 15, 25, t.dishA, "#00ccff");
+  drawBeam(x + TOWER_W/2, t.topH - 15, t.dishA, "rgba(0,200,255,0.22)");
+
+  /* ---- PILIER BAS ---- */
+  drawPillar(x, t.botY, TOWER_W, t.botH, t.seed+500, false);
+
+  /* ---- PARABOLE BAS (tête en bas) ---- */
+  drawDish(x + TOWER_W/2, t.botY + 15, 22, -t.dishA + Math.PI, "#00ffaa");
+  drawBeam(x + TOWER_W/2, t.botY + 15, -t.dishA + Math.PI, "rgba(0,255,150,0.2)");
+}
+
+function drawPillar(x, y, w, h, seed, isTop) {
+  if(h <= 0) return;
+
+  // Corps béton
+  const grad = ctx.createLinearGradient(x,0,x+w,0);
+  grad.addColorStop(0,"#1c1c24");
+  grad.addColorStop(0.25,"#34344a");
+  grad.addColorStop(0.75,"#2a2a3a");
+  grad.addColorStop(1,"#161620");
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y, w, h);
+
+  // Bordure latérale
+  ctx.fillStyle = "#404055";
+  ctx.fillRect(x, y, 3, h);
+  ctx.fillStyle = "#161620";
+  ctx.fillRect(x+w-3, y, 3, h);
+
+  // Fenêtres LED (petits rectangles lumineux)
+  const ledColors = [
+    "rgba(0,180,255,0.9)",
+    "rgba(0,140,220,0.7)",
+    "rgba(0,200,100,0.8)"
+  ];
+  for(let row=y+12; row < y+h-20; row+=16) {
+    for(let col=0; col<3; col++) {
+      const lx = x + 10 + col*14;
+      const color = ledColors[(col + (row|0) + seed) % 3];
+      ctx.fillStyle = color;
+      ctx.fillRect(lx, row, 8, 5);
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillRect(lx, row, 8, 1);
+    }
+  }
+
+  // Bandes danger diagonales (clip au pilier)
+  ctx.save();
+  ctx.rect(x, y, w, h); ctx.clip();
+  ctx.strokeStyle = "rgba(255,170,0,0.2)";
+  ctx.lineWidth = 5;
+  for(let d=-3; d<10; d++) {
+    ctx.beginPath();
+    ctx.moveTo(x + d*20, y);
+    ctx.lineTo(x + d*20 + 40, y+h);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Corniches (haut et bas du pilier)
+  ctx.fillStyle = "#50506a";
+  if(isTop) {
+    ctx.fillRect(x-4, y+h-12, w+8, 6);
+    ctx.fillRect(x-2, y+h-6,  w+4, 6);
+    // Antenne + clignotant
+    ctx.strokeStyle = "#6a6a88"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x+w/2, y+h-12);
+    ctx.lineTo(x+w/2, y+h-40);
+    ctx.stroke();
+    const blink = (frame/18|0)%2;
+    ctx.fillStyle = blink ? "#ff2200" : "#440000";
+    ctx.beginPath();
+    ctx.arc(x+w/2, y+h-42, 4, 0, Math.PI*2);
+    ctx.fill();
+    if(blink) {
+      ctx.fillStyle = "rgba(255,40,0,0.25)";
+      ctx.beginPath();
+      ctx.arc(x+w/2, y+h-42, 9, 0, Math.PI*2);
+      ctx.fill();
+    }
+  } else {
+    ctx.fillRect(x-4, y, w+8, 6);
+    ctx.fillRect(x-2, y+6, w+4, 4);
+  }
+}
+
+function drawDish(cx, cy, r, angle, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  // Arc parabolique
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, Math.PI*0.15, Math.PI*0.85);
+  ctx.stroke();
+  // Rayons structure
+  ctx.lineWidth = 1.5;
+  for(let i=0; i<5; i++) {
+    const a = Math.PI*0.15 + i*(Math.PI*0.7/4);
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
+    ctx.stroke();
+  }
+  // Bras focal
+  ctx.strokeStyle = "#aaaacc"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-r*0.45); ctx.stroke();
+  // Point focal
+  ctx.fillStyle = "#ffcc00";
+  ctx.beginPath(); ctx.arc(0,-r*0.45,3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawBeam(cx, cy, angle, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle - Math.PI/2);
+  const g = ctx.createLinearGradient(0,0,220,0);
+  g.addColorStop(0, color.replace("0.22","0.35").replace("0.2","0.3"));
+  g.addColorStop(1, "transparent");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0,0);
+  ctx.arc(0,0,220,-0.2,0.2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ======================================================
+   COLLISION — AABB simple et fiable
+====================================================== */
+function checkCollision(t) {
+  const jb = getJetBox();
+  const gap = 8; // marge de tolérance visuelle
+  // Pilier haut
+  if (jb.x < t.x + TOWER_W - gap &&
+      jb.x + jb.w > t.x + gap &&
+      jb.y < t.topH - 10) return true;
+  // Pilier bas
+  if (jb.x < t.x + TOWER_W - gap &&
+      jb.x + jb.w > t.x + gap &&
+      jb.y + jb.h > t.botY + 10) return true;
+  return false;
+}
+
+/* ======================================================
+   PARTICULES — traînée de condensation
+====================================================== */
+let particles = [];
+function spawnSmoke() {
+  particles.push({
+    x: jet.x + S*1.5,
+    y: jet.y + JH/2,
+    vx: -1.0 - Math.random(),
+    vy: (Math.random()-0.5)*0.5,
+    life: 1.0,
+    r: 2 + Math.random()*3
+  });
+}
+function updateParticles() {
+  for(let i=particles.length-1; i>=0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.life -= 0.028;
+    if(p.life <= 0) { particles.splice(i,1); continue; }
+    ctx.fillStyle = `rgba(190,205,220,${p.life*0.4})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+/* ======================================================
+   HUD
+====================================================== */
+function drawHUD() {
+  // Score panel
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(10,10,190,75);
+  ctx.strokeStyle = "rgba(0,140,255,0.35)";
+  ctx.lineWidth=1;
+  ctx.strokeRect(10,10,190,75);
+
+  ctx.fillStyle = "#ddeeff";
+  ctx.font = "bold 21px 'Courier New'";
+  ctx.fillText("SCORE : " + score, 20, 38);
+  ctx.fillStyle = "#5588bb";
+  ctx.font = "13px 'Courier New'";
+  ctx.fillText("MEILLEUR : " + highScore, 20, 60);
+  const spd = Math.min(10, 3 + score*0.07).toFixed(1);
+  ctx.fillStyle = "#33aaee";
+  ctx.fillText("VITESSE  : " + spd, 20, 78);
+
+  // Contrôles (au démarrage uniquement)
+  if(state === "play" && score === 0 && frame < 220) {
+    const alpha = frame < 160 ? 1 : (220-frame)/60;
+    ctx.fillStyle = `rgba(200,220,255,${alpha*0.65})`;
+    ctx.font = "12px 'Courier New'";
+    ctx.fillText("ESPACE / ↑ → Monter    F / MAJ → Tirer", W/2 - 168, H-30);
+  }
+
+  // Indicateur pause
+  if(state === "play" && !paused) {
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(W-68, 10, 58, 28);
+    ctx.strokeStyle = "rgba(60,100,140,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(W-68, 10, 58, 28);
+    ctx.fillStyle = "#446688";
+    ctx.font = "10px 'Courier New'";
+    ctx.fillText("[P] ⏸", W-62, 28);
+  }
+}
+
+/* ======================================================
+   ÉCRANS
+====================================================== */
+function drawStartScreen() {
+  ctx.fillStyle = "rgba(3,7,18,0.82)";
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#0099dd";
+  ctx.font = "13px 'Courier New'";
+  ctx.fillText("◈ DASSAULT AVIATION ◈", W/2, H/2-130);
+
+  ctx.fillStyle = "#e8f4ff";
+  ctx.font = "bold 54px 'Courier New'";
+  ctx.fillText("RAFALE", W/2, H/2-75);
+
+  ctx.fillStyle = "#3a7aaa";
+  ctx.font = "22px 'Courier New'";
+  ctx.fillText("MISSION ALPINE", W/2, H/2-40);
+
+  ctx.strokeStyle = "rgba(100,140,180,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(120,H/2-25); ctx.lineTo(W-120,H/2-25); ctx.stroke();
+
+  // Aperçu grades
+  ctx.fillStyle = "#7799aa";
+  ctx.font = "11px 'Courier New'";
+  ctx.fillText("SYSTÈME DE GRADES", W/2, H/2-6);
+  ctx.font = "12px 'Courier New'";
+  const previewGrades = [GRADES[0], GRADES[2], GRADES[5], GRADES[8], GRADES[12]];
+  const px0 = W/2 - 240;
+  previewGrades.forEach((g,i)=>{
+    ctx.fillStyle = g.color;
+    ctx.fillText(g.label, px0 + i*120, H/2+14);
+    if(g.stars>0) drawGradeStars(px0+i*120, H/2+26, Math.min(g.stars,4), g.color, 5);
+  });
+
+  ctx.strokeStyle = "rgba(100,140,180,0.2)";
+  ctx.beginPath(); ctx.moveTo(120,H/2+40); ctx.lineTo(W-120,H/2+40); ctx.stroke();
+
+  // Aperçu médailles
+  ctx.fillStyle = "#7799aa";
+  ctx.font = "11px 'Courier New'";
+  ctx.fillText("MÉDAILLES À GAGNER", W/2, H/2+55);
+  const showM = MEDALS.slice(0,5);
+  const mSpacing = 70;
+  const mStart = W/2 - (showM.length-1)*mSpacing/2;
+  showM.forEach((m,i)=>{
+    drawMedal(mStart+i*mSpacing, H/2+100, m, 26, 0.75);
+  });
+
+  ctx.fillStyle = "#446688";
+  ctx.font = "12px 'Courier New'";
+  ctx.fillText("Évitez les tours radar · Clic ou Espace pour voler", W/2, H/2+155);
+
+  if((frame/25|0)%2) {
+    ctx.fillStyle = "#ffcc22";
+    ctx.font = "bold 16px 'Courier New'";
+    ctx.fillText("[ CLIQUEZ POUR DÉCOLLER ]", W/2, H/2+185);
+  }
+
+  ctx.textAlign = "left";
+}
+
+function drawGameOverScreen() {
+  ctx.fillStyle = "rgba(2,4,12,0.88)";
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign = "center";
+
+  /* ---- TITRE ---- */
+  ctx.fillStyle = "#ff3333";
+  ctx.font = "bold 40px 'Courier New'";
+  ctx.fillText("MISSION ÉCHOUÉE", W/2, 52);
+
+  /* ---- CAUSE DE MORT ---- */
+  if(killedByEnemy) {
+    ctx.fillStyle = "#ff6622";
+    ctx.font = "14px 'Courier New'";
+    ctx.fillText("⚡ Abattu par un Su-27 Flanker russe ⚡", W/2, 74);
+  }
+
+  /* ---- SCORE + RECORD ---- */
+  ctx.fillStyle = "#ccddeeff";
+  ctx.font = "bold 24px 'Courier New'";
+  ctx.fillText("Score : " + score, W/2, 90);
+  if(score > 0 && score >= highScore) {
+    ctx.fillStyle = "#ffcc00";
+    ctx.font = "14px 'Courier New'";
+    ctx.fillText("★  NOUVEAU RECORD  ★", W/2, 112);
+  }
+
+  /* ---- SÉPARATEUR ---- */
+  ctx.strokeStyle = "rgba(100,140,180,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(80,122); ctx.lineTo(W-80,122); ctx.stroke();
+
+  /* ---- GRADE OBTENU ---- */
+  const g = deathGrade;
+  const panW = 280, panH = 100;
+  const panX = W/2 - panW/2, panY = 130;
+
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(panX, panY, panW, panH);
+  ctx.strokeStyle = g.color + "aa";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(panX, panY, panW, panH);
+
+  // Épaulette décorative gauche
+  ctx.fillStyle = g.color + "33";
+  ctx.fillRect(panX, panY, 6, panH);
+  ctx.fillRect(panX+panW-6, panY, 6, panH);
+
+  ctx.fillStyle = "#8899aa";
+  ctx.font = "11px 'Courier New'";
+  ctx.fillText("GRADE ATTEINT", W/2, panY+18);
+
+  ctx.fillStyle = g.color;
+  ctx.font = "bold 20px 'Courier New'";
+  ctx.fillText(g.label.toUpperCase(), W/2, panY+44);
+
+  if(g.stars > 0) {
+    if(g.stars <= 5) drawGradeStars(W/2, panY+68, g.stars, g.color, 9);
+    else {
+      drawGradeStars(W/2, panY+60, 3, g.color, 9);
+      drawGradeStars(W/2, panY+77, 3, g.color, 9);
+    }
+  } else {
+    ctx.fillStyle = g.color + "88";
+    ctx.font = "12px 'Courier New'";
+    ctx.fillText("Continuez pour gagner des étoiles", W/2, panY+70);
+  }
+
+  /* ---- MÉDAILLES GAGNÉES ---- */
+  const medals = getMedalsEarned(score);
+
+  ctx.strokeStyle = "rgba(100,140,180,0.25)";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(80,242); ctx.lineTo(W-80,242); ctx.stroke();
+
+  if(medals.length === 0) {
+    ctx.fillStyle = "#446677";
+    ctx.font = "13px 'Courier New'";
+    ctx.fillText("Aucune médaille — Atteignez 5 points pour débloquer", W/2, 270);
+  } else {
+    ctx.fillStyle = "#aabbcc";
+    ctx.font = "12px 'Courier New'";
+    ctx.fillText("MÉDAILLES DÉCERNÉES", W/2, 260);
+
+    // Affichage des médailles en rangée
+    const medalSize = 38;
+    const spacing = 85;
+    const maxShow = Math.min(medals.length, 7);
+    const totalW = (maxShow - 1) * spacing;
+    const startX = W/2 - totalW/2;
+
+    for(let i=0; i<maxShow; i++) {
+      const mx = startX + i * spacing;
+      const my = 310;
+      drawMedal(mx, my, medals[i], medalSize, 1);
+    }
+
+    // Nom de la dernière médaille (la plus haute)
+    const topMedal = medals[medals.length-1];
+    ctx.fillStyle = topMedal.color;
+    ctx.font = "bold 13px 'Courier New'";
+    ctx.fillText(topMedal.name, W/2, 358);
+    ctx.fillStyle = "#778899";
+    ctx.font = "11px 'Courier New'";
+    ctx.fillText(topMedal.desc, W/2, 374);
+  }
+
+  /* ---- PROCHAINE MÉDAILLE ---- */
+  const nextMedal = MEDALS.find(m => score < m.min);
+  if(nextMedal) {
+    ctx.strokeStyle = "rgba(100,140,180,0.2)";
+    ctx.beginPath(); ctx.moveTo(80,390); ctx.lineTo(W-80,390); ctx.stroke();
+    ctx.fillStyle = "#445566";
+    ctx.font = "11px 'Courier New'";
+    ctx.fillText(`Prochaine médaille : "${nextMedal.name}" à ${nextMedal.min} pts`, W/2, 408);
+  }
+
+  /* ---- BOUTON REJOUER ---- */
+  if((frame/25|0)%2) {
+    ctx.fillStyle = "#44ccff";
+    ctx.font = "bold 15px 'Courier New'";
+    ctx.fillText("[ CLIQUEZ POUR REJOUER ]", W/2, 448);
+  }
+
+  /* ---- MEILLEUR SCORE ---- */
+  ctx.fillStyle = "#334455";
+  ctx.font = "12px 'Courier New'";
+  ctx.fillText("Record : " + highScore + " pts — " + getGrade(highScore).label, W/2, 476);
+
+  ctx.textAlign = "left";
+}
+
+/* ======================================================
+   RENDU DU JET (avec rotation basée sur vélocité)
+====================================================== */
+function renderJet() {
+  const angle = Math.max(-0.4, Math.min(0.5, jet.vy * 0.042));
+  ctx.save();
+  ctx.translate(jet.x + JW/2, jet.y + JH/2);
+  ctx.rotate(angle);
+  drawJetSprite(-JW/2, -JH/2);
+  ctx.restore();
+}
+
+/* ======================================================
+   DEBUG HITBOX (désactivé en prod)
+====================================================== */
+const DEBUG_HITBOX = false;
+function drawHitbox() {
+  if(!DEBUG_HITBOX) return;
+  const jb = getJetBox();
+  ctx.strokeStyle = "lime"; ctx.lineWidth = 2;
+  ctx.strokeRect(jb.x, jb.y, jb.w, jb.h);
+  for(const t of towers) {
+    ctx.strokeStyle = "red";
+    ctx.strokeRect(t.x+8, 0, TOWER_W-16, t.topH);
+    ctx.strokeRect(t.x+8, t.botY, TOWER_W-16, t.botH);
+  }
+}
+
+/* ======================================================
+   AVIONS RUSSES — SU-27 FLANKER
+   Apparaissent à partir de 50 points.
+   Volent de droite à gauche à des hauteurs variables,
+   avec un léger suivi vertical du joueur (IA simple).
+====================================================== */
+let enemies = [];
+let enemySpawnTimer = 0;
+const ENEMY_SPAWN_MIN = 180; // frames entre spawns (diminue avec le score)
+
+/* Palette Su-27 */
+const E = {
+  // Bleu-gris russe
+  e0:"#c0c8c4", e1:"#98a8a0", e2:"#708078", e3:"#505858", e4:"#303838", e5:"#202828",
+  // Étoile rouge soviétique
+  sr:"#cc1111", sw:"#ffffff",
+  // Cockpit
+  eck:"#102030",
+  // Flamme (même palette)
+  ef0:"#ff4400", ef1:"#ff8800", ef2:"#ffcc00",
+};
+
+/* ---- DESSIN SU-27 PIXEL ART (18col × 8row, S=4) ---- */
+/* Le Su-27 vole vers la GAUCHE → sprite miroir du Rafale  */
+function drawSu27Sprite(ox, oy, speed) {
+  function cell(c, r, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(ox + c*S, oy + r*S, S, S);
+  }
+  function poly(pts, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(ox+pts[0], oy+pts[1]);
+    for(let i=2; i<pts.length; i+=2) ctx.lineTo(ox+pts[i], oy+pts[i+1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /* ---- POSTCOMBUSTION (à droite car vol vers gauche) ---- */
+  const ftick = (frame % 8 < 4);
+  const flen  = (ftick ? 5 : 4) * S;
+  const fw    = 18*S; // largeur sprite
+  poly([fw,3*S, fw,6*S, fw+flen,5.2*S, fw+flen,3.8*S], E.ef0);
+  poly([fw,3.5*S, fw,5.5*S, fw+flen-S,5*S, fw+flen-S,4*S], E.ef1);
+  poly([fw,4*S, fw,5*S, fw+flen-2*S,4.7*S, fw+flen-2*S,4.3*S], E.ef2);
+
+  /* ---- TUYÈRES DOUBLES (caractéristique Su-27) ---- */
+  // Tuyère gauche
+  cell(17,3,E.e4); cell(17,4,E.e3); cell(17,5,E.e4);
+  // Tuyère droite
+  cell(16,4,E.e4); cell(16,5,E.e3); cell(16,6,E.e4);
+
+  /* ---- FUSELAGE (col 0→14, de nez à gauche vers queue à droite) ---- */
+  // Nez pointu (col 0)
+  poly([0,4*S+1, 0,5*S-1, -S,4.5*S], E.e4);
+  cell(0,4,E.e5);
+
+  // cols 1-3 : cône nez
+  cell(1,3,E.e4); cell(1,4,E.e3);
+  cell(2,3,E.e4); cell(2,4,E.e2); cell(2,5,E.e3);
+  cell(3,3,E.e3); cell(3,4,E.e1); cell(3,5,E.e2);
+
+  // cols 4-8 : corps principal
+  cell(4,2,E.e3); cell(4,3,E.e1); cell(4,4,E.e0); cell(4,5,E.e1); cell(4,6,E.e3);
+  cell(5,2,E.e3); cell(5,3,E.e0); cell(5,4,E.e0); cell(5,5,E.e1); cell(5,6,E.e3);
+  cell(6,2,E.e3); cell(6,3,E.e0); cell(6,4,E.e0); cell(6,5,E.e1); cell(6,6,E.e2);
+  cell(7,2,E.e2); cell(7,3,E.e1); cell(7,4,E.e0); cell(7,5,E.e1); cell(7,6,E.e2);
+  cell(8,2,E.e2); cell(8,3,E.e1); cell(8,4,E.e1); cell(8,5,E.e2); cell(8,6,E.e3);
+
+  // cols 9-13 : arrière corps
+  cell(9,3,E.e3); cell(9,4,E.e2); cell(9,5,E.e2); cell(9,6,E.e3);
+  cell(10,3,E.e3); cell(10,4,E.e2); cell(10,5,E.e3); cell(10,6,E.e4);
+  cell(11,3,E.e3); cell(11,4,E.e3); cell(11,5,E.e3); cell(11,6,E.e4);
+  cell(12,3,E.e4); cell(12,4,E.e3); cell(12,5,E.e4);
+  cell(13,3,E.e4); cell(13,4,E.e4); cell(13,5,E.e4);
+  cell(14,3,E.e4); cell(14,4,E.e4);
+  cell(15,3,E.e5); cell(15,4,E.e5); cell(15,5,E.e5);
+
+  /* ---- LIGNE DORSALE ---- */
+  ctx.fillStyle = E.e2;
+  ctx.fillRect(ox+3*S, oy+2*S, 9*S, 2);
+
+  /* ---- DOUBLE DÉRIVE VERTICALE (Su-27 signature) ---- */
+  // Dérive gauche
+  poly([10*S,2*S, 13*S,2*S, 14*S,0, 9*S,0], E.e2);
+  poly([10*S,2*S, 11*S,2*S, 11.5*S,0, 9*S,0], E.e1);
+  // Dérive droite (légèrement décalée)
+  poly([12*S,2*S, 15*S,2*S, 16*S,0, 11*S,0], E.e3);
+
+  /* ---- CANARD AVANT ---- */
+  poly([4*S,2*S, 7*S,2*S, 5*S,-S, 3*S,0], E.e2);
+  poly([5*S,2*S, 7*S,2*S, 5.5*S,-S*0.5, 4*S,S*0.5], E.e1);
+
+  /* ---- COCKPIT ---- */
+  cell(4,1,E.e5); cell(5,1,E.e5); cell(6,1,E.e5); cell(7,1,E.e5);
+  cell(3,2,E.e5); cell(8,2,E.e5);
+  poly([4*S,1*S, 8*S,1*S, 8*S,2*S, 3*S,2*S], E.eck);
+  // Reflet rouge (vitre teintée soviétique)
+  ctx.fillStyle = "rgba(180,80,80,0.4)";
+  ctx.fillRect(ox+4*S, oy+1*S+1, 2*S, Math.ceil(S*0.4));
+
+  /* ---- GRANDE AILE DELTA (forme différente du Rafale) ---- */
+  // Aile large et effilée
+  poly([0,5*S, 11*S,5*S, 9*S,9*S, -S,9*S], E.e1);
+  poly([0,6*S, 11*S,6*S, 9*S,9*S, -S,9*S], E.e2);
+  // Ombre bord d'attaque
+  poly([-S,7*S, 0,5*S, S,5*S, -S,8*S], E.e3);
+  // Nervures Su-27
+  ctx.strokeStyle = E.e3;
+  ctx.lineWidth = 1;
+  for(let n=0; n<5; n++) {
+    const rx = ox + (1+n*2)*S;
+    ctx.beginPath();
+    ctx.moveTo(rx, oy+5*S);
+    ctx.lineTo(rx - n*S*0.5, oy+8.5*S);
+    ctx.stroke();
+  }
+  // Pointe d'aile arrondie
+  poly([9*S,6*S, 11*S,5*S, 10*S,8*S, 8*S,8*S], E.e3);
+
+  /* ---- PRISE D'AIR ventrale — grande sur Su-27 ---- */
+  ctx.fillStyle = E.e5;
+  ctx.fillRect(ox+3*S, oy+7*S, 6*S, S);
+  ctx.fillStyle = "#060c12";
+  ctx.fillRect(ox+4*S, oy+7*S, 4*S, S-1);
+
+  /* ---- MISSILES R-77 ---- */
+  // Missile 1
+  poly([0,7*S, 6*S,7*S, 6*S,7*S+3, 0,7*S+3], "#909898");
+  ctx.fillStyle="#a0a8a8";
+  ctx.beginPath(); ctx.arc(ox, oy+7*S+1, 2, 0, Math.PI*2); ctx.fill();
+  poly([5*S,7*S, 6*S,7*S, 6*S,6*S+2, 5*S,6*S+2], "#666");
+  poly([5*S,7*S+3, 6*S,7*S+3, 6*S,8*S, 5*S,8*S], "#666");
+  // Missile 2
+  poly([0,8*S, 5*S,8*S, 5*S,8*S+3, 0,8*S+3], "#909898");
+  ctx.fillStyle="#a0a8a8";
+  ctx.beginPath(); ctx.arc(ox, oy+8*S+1, 2, 0, Math.PI*2); ctx.fill();
+  poly([4*S,8*S, 5*S,8*S, 5*S,7*S+2, 4*S,7*S+2], "#666");
+
+  /* ---- ÉTOILE ROUGE soviétique ---- */
+  const ex = ox + 5*S + S/2|0;
+  const ey = oy + 4*S + S/2|0;
+  const er = S * 0.9;
+  ctx.beginPath(); ctx.arc(ex,ey,er,0,Math.PI*2); ctx.fillStyle=E.sr; ctx.fill();
+  // Étoile à 5 branches
+  ctx.fillStyle = E.sw;
+  ctx.beginPath();
+  for(let i=0; i<10; i++) {
+    const a = (i/10)*Math.PI*2 - Math.PI/2;
+    const rad = i%2===0 ? er*0.85 : er*0.38;
+    if(i===0) ctx.moveTo(ex+Math.cos(a)*rad, ey+Math.sin(a)*rad);
+    else ctx.lineTo(ex+Math.cos(a)*rad, ey+Math.sin(a)*rad);
+  }
+  ctx.closePath(); ctx.fill();
+  // Centre étoile rouge
+  ctx.beginPath(); ctx.arc(ex,ey,er*0.22,0,Math.PI*2);
+  ctx.fillStyle=E.sr; ctx.fill();
+}
+
+/* ---- SPAWN ENNEMI ---- */
+function spawnEnemy() {
+  const margin = 40;
+  const y = margin + Math.random() * (GROUND_Y - JH - margin*2);
+  const ownSpeed = 1.5 + Math.random() * 1.5;
+  enemies.push({
+    x: W + 20,
+    y,
+    vy: 0,
+    ownSpeed,
+    trackStrength: 0.012 + Math.random()*0.01,
+    warningShown: false,
+    type: "su27"
+  });
+}
+
+/* ---- HÉLICOPTÈRES RUSSES (dès 30 points) ---- */
+/* Palette Helo */
+const H2 = {
+  // Vert olive militaire russe
+  h0:"#7a8c50", h1:"#5a6a38", h2:"#3c4828", h3:"#242e18",
+  // Métal sombre
+  hm:"#404848", hd:"#283030",
+  // Vitres
+  hv:"#102828",
+  // Étoile rouge
+  hr:"#cc1111",
+  // Rotor
+  ro:"#2a3020",
+};
+
+const HELO_W = 16*S;  // 16 colonnes
+const HELO_H = 10*S;  // 10 lignes
+let heloSpawnTimer = 0;
+const HELO_SPAWN_MIN = 200;
+
+/* Rotor tick pour animation */
+let rotorTick = 0;
+
+function drawHeloSprite(ox, oy) {
+  function cell(c,r,color,cw,ch) {
+    if(cw===undefined)cw=1; if(ch===undefined)ch=1;
+    ctx.fillStyle=color;
+    ctx.fillRect(ox+c*S, oy+r*S, S*cw, S*ch);
+  }
+  function poly(pts,color) {
+    ctx.fillStyle=color;
+    ctx.beginPath();
+    ctx.moveTo(ox+pts[0],oy+pts[1]);
+    for(let i=2;i<pts.length;i+=2) ctx.lineTo(ox+pts[i],oy+pts[i+1]);
+    ctx.closePath(); ctx.fill();
+  }
+
+  /* ---- QUEUE (à gauche, helo va vers gauche) ---- */
+  // Poutre de queue longue et effilée
+  poly([0,4*S, 4*S,3*S, 4*S,5*S, 0,5*S], H2.h1);
+  poly([0,4*S, 4*S,3*S, 4*S,4*S, 0,4.5*S], H2.h0);
+  // Rotor de queue
+  cell(0, 3, H2.hm);
+  ctx.save();
+  ctx.translate(ox, oy+3*S+S/2);
+  ctx.rotate(rotorTick * 0.4);
+  ctx.fillStyle = H2.ro;
+  ctx.fillRect(-8, -1, 16, 2);
+  ctx.fillRect(-1, -8, 2, 16);
+  ctx.restore();
+
+  /* ---- FUSELAGE PRINCIPAL ---- */
+  // Corps arrondi caractéristique des helos
+  poly([3*S,1*S, 10*S,1*S, 11*S,2*S, 11*S,7*S, 10*S,8*S, 3*S,8*S, 2*S,7*S, 2*S,2*S], H2.h1);
+  // Dessus (plus clair)
+  poly([3*S,1*S, 10*S,1*S, 11*S,2*S, 11*S,4*S, 3*S,4*S, 2*S,3*S, 2*S,2*S], H2.h0);
+  // Bas sombre
+  poly([2*S,6*S, 11*S,6*S, 10*S,8*S, 3*S,8*S, 2*S,7*S], H2.h2);
+
+  /* ---- NEZ VITRÉ (avant = droite, helo vole vers gauche) ---- */
+  // Bulle de cockpit
+  poly([10*S,2*S, 13*S,2*S, 14*S,3*S, 14*S,6*S, 13*S,7*S, 10*S,7*S], H2.hv);
+  // Reflet vitre
+  ctx.fillStyle="rgba(100,200,180,0.35)";
+  ctx.fillRect(ox+10*S, oy+2*S, S*2, S);
+  ctx.fillRect(ox+12*S+1, oy+2*S+2, S-1, Math.ceil(S*0.6));
+  // Cadre cockpit
+  cell(10,1,H2.hm); cell(13,1,H2.hm); cell(14,2,H2.hm); cell(14,7,H2.hm);
+  // Pilotes (silhouettes)
+  ctx.fillStyle="#0a1818";
+  ctx.fillRect(ox+10*S+2, oy+3*S, S-1, S-1);
+  ctx.fillRect(ox+11*S+2, oy+3*S, S-1, S-1);
+
+  /* ---- TRAIN D'ATTERRISSAGE (patins) ---- */
+  // Patin gauche
+  ctx.fillStyle=H2.hm;
+  ctx.fillRect(ox+4*S, oy+8*S, S*5, 3);
+  ctx.fillRect(ox+5*S, oy+7*S, 2, S);
+  ctx.fillRect(ox+8*S, oy+7*S, 2, S);
+  // Patin droit
+  ctx.fillRect(ox+4*S, oy+8*S+S, S*5, 3);
+  ctx.fillRect(ox+5*S, oy+8*S+3, 2, S-3);
+  ctx.fillRect(ox+8*S, oy+8*S+3, 2, S-3);
+
+  /* ---- PYLÔNES ET ROQUETTES (style Mi-24 Hind) ---- */
+  // Pylône gauche
+  poly([5*S,7*S, 7*S,7*S, 6*S,9*S, 4*S,9*S], H2.h2);
+  // Pod roquettes gauche
+  ctx.fillStyle=H2.hm;
+  ctx.fillRect(ox+3*S, oy+8*S+4, S*3, S-1);
+  // Bouches roquettes
+  for(let r=0;r<3;r++){
+    ctx.fillStyle="#0a1010";
+    ctx.fillRect(ox+3*S+r*4, oy+8*S+4, 3, S-2);
+  }
+
+  /* ---- ROQUETTE TIRÉE (déco) ---- */
+  ctx.fillStyle="#888";
+  ctx.fillRect(ox+3*S-4, oy+8*S+6, 5, 2);
+  ctx.fillStyle="#ff6600";
+  ctx.fillRect(ox+3*S-6, oy+8*S+6, 2, 2);
+
+  /* ---- ÉTOILE ROUGE ---- */
+  const ex2 = ox+7*S, ey2 = oy+5*S;
+  const er2 = S*0.8;
+  ctx.beginPath(); ctx.arc(ex2,ey2,er2,0,Math.PI*2);
+  ctx.fillStyle=H2.hr; ctx.fill();
+  ctx.fillStyle="rgba(255,255,255,0.9)";
+  ctx.beginPath();
+  for(let i=0;i<10;i++){
+    const a=(i/10)*Math.PI*2-Math.PI/2;
+    const rad=i%2===0?er2*0.85:er2*0.38;
+    if(i===0) ctx.moveTo(ex2+Math.cos(a)*rad,ey2+Math.sin(a)*rad);
+    else ctx.lineTo(ex2+Math.cos(a)*rad,ey2+Math.sin(a)*rad);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(ex2,ey2,er2*0.22,0,Math.PI*2);
+  ctx.fillStyle=H2.hr; ctx.fill();
+
+  /* ---- ROTOR PRINCIPAL ANIMÉ ---- */
+  rotorTick += 0.35;
+  const rotCX = ox + 7*S;
+  const rotCY = oy + S;
+  const rotLen = 5*S;
+  ctx.save();
+  ctx.translate(rotCX, rotCY);
+  ctx.rotate(rotorTick);
+  // Deux pales en croix
+  ctx.fillStyle = H2.ro;
+  ctx.fillRect(-rotLen, -2, rotLen*2, 4);
+  ctx.fillRect(-2, -rotLen, 4, rotLen*2);
+  // Extrémités des pales légèrement plus larges
+  ctx.fillStyle = H2.h3;
+  ctx.fillRect(-rotLen, -3, 8, 6);
+  ctx.fillRect(rotLen-8, -3, 8, 6);
+  ctx.fillRect(-3, -rotLen, 6, 8);
+  ctx.fillRect(-3, rotLen-8, 6, 8);
+  // Moyeu central
+  ctx.fillStyle = H2.hm;
+  ctx.beginPath(); ctx.arc(0,0,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = H2.h3;
+  ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  /* ---- ANTENNE ---- */
+  ctx.strokeStyle=H2.hm; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(ox+8*S, oy+S);
+  ctx.lineTo(ox+8*S, oy);
+  ctx.stroke();
+}
+
+function spawnHelo() {
+  const minY = 80;
+  const maxY = GROUND_Y - HELO_H - 40;
+  enemies.push({
+    x: W + 20,
+    y: minY + Math.random()*(maxY-minY),
+    vy: 0,
+    ownSpeed: 0.8 + Math.random()*0.7,  // plus lent que les jets
+    trackStrength: 0.008 + Math.random()*0.008,
+    warningShown: false,
+    type: "helo",
+    // Oscillation verticale (helo plane)
+    floatPhase: Math.random()*Math.PI*2,
+    floatAmp: 15 + Math.random()*20,
+    floatSpeed: 0.025 + Math.random()*0.02,
+  });
+}
+
+function getHeloBox(e) {
+  return { x: e.x + S*2, y: e.y + S*1, w: HELO_W - S*4, h: HELO_H - S*2 };
+}
+
+/* ---- DIMENSION HITBOX ENNEMI ---- */
+const EW = 18*S; // largeur sprite Su-27
+const EH = 8*S;  // hauteur sprite Su-27
+
+function getEnemyBox(e) {
+  if(e.type === "helo") return getHeloBox(e);
+  return { x: e.x + S*1, y: e.y + S*2, w: EW - S*3, h: EH - S*4 };
+}
+
+/* ---- COLLISION Rafale ↔ Su-27 ---- */
+function enemyCollidesWithJet(e) {
+  const jb = getJetBox();
+  const eb = getEnemyBox(e);
+  return jb.x < eb.x + eb.w &&
+         jb.x + jb.w > eb.x &&
+         jb.y < eb.y + eb.h &&
+         jb.y + jb.h > eb.y;
+}
+
+/* ---- MISE À JOUR ET RENDU ENNEMIS ---- */
+function updateEnemies() {
+  const gameSpeed = Math.min(10, 3 + score*0.07);
+
+  /* -- Spawn Su-27 (dès 50 pts) -- */
+  if(score >= 50) {
+    const spawnInterval = Math.max(140, ENEMY_SPAWN_MIN - (score-50)*2);
+    enemySpawnTimer++;
+    if(enemySpawnTimer >= spawnInterval) {
+      spawnEnemy();
+      enemySpawnTimer = 0;
+    }
+  }
+
+  /* -- Spawn Hélicoptères (dès 30 pts) -- */
+  if(score >= 30) {
+    heloSpawnTimer++;
+    const heloInterval = Math.max(160, HELO_SPAWN_MIN - (score-30)*3);
+    if(heloSpawnTimer >= heloInterval) {
+      spawnHelo();
+      heloSpawnTimer = 0;
+    }
+  }
+
+  for(let i=enemies.length-1; i>=0; i--) {
+    const e = enemies[i];
+    const isHelo = e.type === "helo";
+    const ew = isHelo ? HELO_W : EW;
+    const eh = isHelo ? HELO_H : EH;
+
+    /* -- Déplacement horizontal -- */
+    e.x -= (e.ownSpeed + (isHelo ? gameSpeed*0.15 : gameSpeed*0.3));
+
+    /* -- Comportement vertical -- */
+    if(isHelo) {
+      // Les helos oscillent + suivent doucement
+      e.floatPhase += e.floatSpeed;
+      const floatY = Math.sin(e.floatPhase) * e.floatAmp;
+      const targetY = jet.y + JH/2 - eh/2 + floatY;
+      const dy = targetY - e.y;
+      e.vy += dy * e.trackStrength;
+      e.vy *= 0.88;
+    } else {
+      const targetY = jet.y + JH/2 - eh/2;
+      const dy = targetY - e.y;
+      e.vy += dy * e.trackStrength;
+      e.vy *= 0.92;
+    }
+    e.y += e.vy;
+    e.y = Math.max(10, Math.min(GROUND_Y - eh - 5, e.y));
+
+    /* -- Suppression hors écran -- */
+    if(e.x + ew < -10) { enemies.splice(i,1); continue; }
+
+    /* -- Rendu -- */
+    if(isHelo) {
+      // Ombre au sol (effet de profondeur)
+      const shadowAlpha = 0.15 * (1 - (e.y / GROUND_Y));
+      ctx.save();
+      ctx.globalAlpha = shadowAlpha;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(e.x + HELO_W/2, GROUND_Y - 4, HELO_W*0.4, 6, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+      drawHeloSprite(e.x, e.y);
+    } else {
+      const angle = Math.max(-0.3, Math.min(0.3, e.vy * 0.05));
+      ctx.save();
+      ctx.translate(e.x + EW/2, e.y + EH/2);
+      ctx.rotate(angle);
+      drawSu27Sprite(-EW/2, -EH/2, e.ownSpeed);
+      ctx.restore();
+    }
+
+    /* -- Indicateur de danger -- */
+    const dist = e.x - jet.x;
+    if(dist < 260 && dist > 0) {
+      const alpha = (1 - dist/260) * (0.5 + 0.5*Math.sin(frame*0.3));
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = isHelo ? "#ff8800" : "#ff2222";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(e.x - 3, e.y - 3, ew + 6, eh + 6);
+      ctx.fillStyle = isHelo ? "#ffaa44" : "#ff4444";
+      ctx.font = "bold 10px 'Courier New'";
+      ctx.textAlign = "center";
+      ctx.fillText(isHelo ? "Mi-24" : "SU-27", e.x + ew/2, e.y - 7);
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+  }
+}
+
+/* ---- ALERTE ENNEMIS (affichée dans le HUD) ---- */
+function drawEnemyAlert() {
+  if((score < 30 && score < 50) || enemies.length === 0) return;
+  let closest = null, minDist = Infinity;
+  for(const e of enemies) {
+    const d = e.x - jet.x;
+    if(d > 0 && d < minDist) { minDist = d; closest = e; }
+  }
+  if(!closest || minDist > 400) return;
+
+  const isHelo = closest.type === "helo";
+  const alpha = Math.min(1, (400-minDist)/200) * (0.7 + 0.3*Math.sin(frame*0.25));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = isHelo ? "rgba(60,30,0,0.75)" : "rgba(80,0,0,0.7)";
+  ctx.fillRect(W/2-130, H-50, 260, 36);
+  ctx.strokeStyle = isHelo ? "#ff8800" : "#ff2222";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(W/2-130, H-50, 260, 36);
+  ctx.fillStyle = isHelo ? "#ffaa44" : "#ff4444";
+  ctx.font = "bold 13px 'Courier New'";
+  ctx.textAlign = "center";
+  ctx.fillText(isHelo ? "⚠ HÉLICOPTÈRE Mi-24 DÉTECTÉ" : "⚠ ENNEMI DÉTECTÉ — SU-27", W/2, H-28);
+  ctx.restore();
+  ctx.textAlign = "left";
+}
+
+/* ---- WARN dans l'écran game over ---- */
+let killedByEnemy = false;
+let towerInterval = 130;
+let enemyZoneWarning = 0;
+
+/* ======================================================
+   MISSILES DU RAFALE — système de tir
+====================================================== */
+let missiles     = [];        // missiles en vol
+let missileStock = 6;         // munitions disponibles
+let missileCooldown = 0;      // frames avant de pouvoir retirer
+let missileReloadFlash = 0;   // timer de flash lors du rechargement
+const MISSILE_COOLDOWN = 22;  // ~0.37s entre chaque tir
+const MISSILE_SPEED   = 14;   // vitesse horizontale du missile
+const MISSILE_RANGE   = W + 100; // portée max
+
+/* Explosions ennemies séparées du joueur */
+let enemyExplosions = [];
+
+function fireMissile() {
+  if(missileStock <= 0) return;
+  if(missileCooldown > 0) return;
+  if(state !== "play" || paused) return;
+
+  // Le missile part de la pointe du nez du Rafale
+  missiles.push({
+    x:  jet.x + JW,          // nez du Rafale
+    y:  jet.y + JH / 2 - 2,  // centre fuselage
+    vx: MISSILE_SPEED,
+    vy: jet.vy * 0.15,        // légère composante verticale héritée
+    life: 1.0,
+    startX: jet.x + JW,
+    trail: []
+  });
+  missileStock--;
+  missileCooldown = MISSILE_COOLDOWN;
+}
+
+function spawnEnemyExplosion(cx, cy) {
+  const parts = [];
+  for(let i = 0; i < 22; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1.2 + Math.random() * 4.5;
+    const cols = ["#ff6600","#ffaa00","#ffee00","#ffffff","#ff3300"];
+    parts.push({
+      x:cx, y:cy,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - 1,
+      life:0.9+Math.random()*0.1, decay:0.018+Math.random()*0.02,
+      size:3+Math.random()*7, color:cols[Math.random()*cols.length|0],
+      type:"ember", grav:0.1, trail:[]
+    });
+  }
+  for(let i = 0; i < 12; i++) {
+    const a = Math.random()*Math.PI*2, sp = 0.3+Math.random()*1.8;
+    parts.push({
+      x:cx+(Math.random()-.5)*14, y:cy+(Math.random()-.5)*8,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-.4,
+      life:0.65+Math.random()*0.25, decay:0.007+Math.random()*0.008,
+      size:8+Math.random()*16, color:null, type:"smoke", grav:-0.018
+    });
+  }
+  for(let i = 0; i < 14; i++) {
+    const a = Math.random()*Math.PI*2, sp = 3+Math.random()*7;
+    parts.push({
+      x:cx, y:cy,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1.5,
+      life:0.5+Math.random()*0.4, decay:0.028+Math.random()*0.025,
+      size:1.5+Math.random()*1.5, color:"#ffffff", type:"spark", grav:0.12
+    });
+  }
+  enemyExplosions.push({ parts, tick:0 });
+}
+
+function updateMissiles() {
+  if(missileCooldown > 0) missileCooldown--;
+
+  for(let i = missiles.length - 1; i >= 0; i--) {
+    const m = missiles[i];
+
+    // Physique : léger home sur l'ennemi le plus proche devant
+    let target = null;
+    let minD = Infinity;
+    for(const e of enemies) {
+      if(e.x > m.x - 20) { // ennemi devant ou à côté
+        const d = Math.hypot(e.x + EW/2 - m.x, e.y + EH/2 - m.y);
+        if(d < minD) { minD = d; target = e; }
+      }
+    }
+    if(target) {
+      // Guidage proportionnel léger
+      const ty = target.y + EH/2 - m.y;
+      m.vy += ty * 0.025;
+      m.vy = Math.max(-6, Math.min(6, m.vy));
+    }
+
+    m.trail.push({x: m.x, y: m.y});
+    if(m.trail.length > 18) m.trail.shift();
+
+    m.x += m.vx;
+    m.y += m.vy;
+    m.life -= 0.003;
+
+    // Hors portée ou hors écran
+    if(m.x - m.startX > MISSILE_RANGE || m.x > W + 50 || m.y < 0 || m.y > H || m.life <= 0) {
+      missiles.splice(i, 1);
+      continue;
+    }
+
+    // ---- Collision missile ↔ ennemi ----
+    let hit = false;
+    for(let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      const eb = getEnemyBox(e);
+      if(m.x + 10 > eb.x && m.x < eb.x + eb.w &&
+         m.y + 3  > eb.y && m.y < eb.y + eb.h) {
+        const cx2 = e.x + (e.type==="helo" ? HELO_W : EW)/2;
+        const cy2 = e.y + (e.type==="helo" ? HELO_H : EH)/2;
+        spawnEnemyExplosion(cx2, cy2);
+        enemies.splice(j, 1);
+        missiles.splice(i, 1);
+        if(missileStock < 6) { missileStock++; missileReloadFlash = 40; }
+        hit = true;
+        break;
+      }
+    }
+    if(hit) continue;
+
+    // ---- RENDU DU MISSILE ----
+    // Traînée de fumée blanche
+    for(let t = 0; t < m.trail.length - 1; t++) {
+      const a = (t / m.trail.length) * 0.55;
+      const r = 2 + t * 0.25;
+      ctx.fillStyle = `rgba(220,230,255,${a})`;
+      ctx.beginPath();
+      ctx.arc(m.trail[t].x, m.trail[t].y, r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    // Flamme de propulsion
+    const flen = (frame % 6 < 3) ? 12 : 9;
+    ctx.fillStyle = "#ff8800";
+    ctx.beginPath();
+    ctx.moveTo(m.x - 2, m.y - 2);
+    ctx.lineTo(m.x - flen, m.y);
+    ctx.lineTo(m.x - 2, m.y + 2);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ffdd00";
+    ctx.beginPath();
+    ctx.moveTo(m.x - 2, m.y - 1);
+    ctx.lineTo(m.x - flen*0.55, m.y);
+    ctx.lineTo(m.x - 2, m.y + 1);
+    ctx.closePath(); ctx.fill();
+    // Corps du missile
+    ctx.fillStyle = "#c8d0d8";
+    ctx.beginPath();
+    ctx.moveTo(m.x + 10, m.y);       // pointe
+    ctx.lineTo(m.x - 2, m.y - 3);    // dessus
+    ctx.lineTo(m.x - 2, m.y + 3);    // dessous
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e8ecf0";
+    ctx.fillRect(m.x - 2, m.y - 3, 10, 3);
+    // Empennage
+    ctx.fillStyle = "#8898a8";
+    ctx.beginPath();
+    ctx.moveTo(m.x - 2, m.y - 3);
+    ctx.lineTo(m.x - 8, m.y - 7);
+    ctx.lineTo(m.x - 8, m.y - 3);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(m.x - 2, m.y + 3);
+    ctx.lineTo(m.x - 8, m.y + 7);
+    ctx.lineTo(m.x - 8, m.y + 3);
+    ctx.closePath(); ctx.fill();
+    // Tête chercheuse IR
+    ctx.fillStyle = "#334455";
+    ctx.beginPath();
+    ctx.arc(m.x + 10, m.y, 2.5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#ff4400";
+    ctx.beginPath();
+    ctx.arc(m.x + 10, m.y, 1.2, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function updateEnemyExplosions() {
+  for(let ei = enemyExplosions.length - 1; ei >= 0; ei--) {
+    const ex = enemyExplosions[ei];
+    ex.tick++;
+
+    // Flash initial petit
+    if(ex.tick < 5) {
+      const a = (1 - ex.tick/5) * 0.6;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "#ffcc44";
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
+
+    let alive = false;
+    for(let i = ex.parts.length - 1; i >= 0; i--) {
+      const p = ex.parts[i];
+      p.vx *= 0.97; p.vy += p.grav; p.vy *= 0.98;
+      p.x += p.vx; p.y += p.vy;
+      p.life -= p.decay;
+      if(p.life <= 0) { ex.parts.splice(i,1); continue; }
+      alive = true;
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life);
+      if(p.type === "smoke") {
+        const r = p.size*(1.4 - p.life*0.4);
+        const g2 = Math.floor(p.life*45)|0;
+        ctx.fillStyle = `rgb(${g2},${g2},${g2})`;
+        ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+      } else if(p.type === "ember") {
+        p.trail.push({x:p.x,y:p.y});
+        if(p.trail.length>4) p.trail.shift();
+        for(let t=0;t<p.trail.length-1;t++){
+          ctx.globalAlpha=(t/p.trail.length)*p.life*0.4;
+          ctx.fillStyle=p.color;
+          ctx.beginPath(); ctx.arc(p.trail[t].x,p.trail[t].y,p.size*0.2*(t/p.trail.length),0,Math.PI*2); ctx.fill();
+        }
+        ctx.globalAlpha=p.life;
+        ctx.fillStyle=p.color;
+        ctx.shadowColor=p.color; ctx.shadowBlur=p.size;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.size*0.45,0,Math.PI*2); ctx.fill();
+        ctx.shadowBlur=0;
+      } else if(p.type === "spark") {
+        ctx.strokeStyle=p.color; ctx.lineWidth=1.5;
+        ctx.shadowColor="#fff"; ctx.shadowBlur=3;
+        ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x-p.vx*2.5,p.y-p.vy*2.5); ctx.stroke();
+        ctx.shadowBlur=0;
+      }
+      ctx.restore();
+    }
+    if(!alive) enemyExplosions.splice(ei, 1);
+  }
+}
+
+/* ---- HUD MISSILES ---- */
+function drawMissileHUD() {
+  const panX = 10, panY = 95;
+  const iconW = 22, iconH = 10, gap = 5;
+  const cols = 6;
+
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(panX, panY, cols*(iconW+gap)+gap, 36);
+  ctx.strokeStyle = "rgba(0,140,255,0.25)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panX, panY, cols*(iconW+gap)+gap, 36);
+
+  ctx.fillStyle = "#4488aa";
+  ctx.font = "9px 'Courier New'";
+  ctx.fillText("MISSILES", panX + 5, panY + 10);
+
+  for(let i = 0; i < cols; i++) {
+    const mx = panX + gap + i*(iconW+gap);
+    const my = panY + 16;
+    const loaded = i < missileStock;
+
+    if(loaded) {
+      // Missile chargé — dessin pixel
+      ctx.fillStyle = "#c8d0d8";
+      ctx.fillRect(mx+3, my+3, iconW-3, 4);
+      ctx.fillStyle = "#ff8800";
+      ctx.fillRect(mx, my+4, 4, 2);
+      ctx.fillStyle = "#334455";
+      ctx.fillRect(mx+iconW-1, my+3, 2, 4);
+      // Empennage
+      ctx.fillStyle = "#8898a8";
+      ctx.fillRect(mx+2, my+1, 3, 2);
+      ctx.fillRect(mx+2, my+7, 3, 2);
+    } else {
+      // Slot vide
+      ctx.fillStyle = "rgba(255,50,50,0.2)";
+      ctx.fillRect(mx+1, my+2, iconW-2, 6);
+      ctx.strokeStyle = "rgba(255,50,50,0.4)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(mx+1, my+2, iconW-2, 6);
+    }
+  }
+
+  // Cooldown bar
+  if(missileCooldown > 0) {
+    const barW = cols*(iconW+gap);
+    const prog = 1 - missileCooldown/MISSILE_COOLDOWN;
+    ctx.fillStyle = "rgba(0,200,255,0.25)";
+    ctx.fillRect(panX+gap, panY+31, barW*prog, 3);
+  }
+
+  // Rechargement message si vide
+  if(missileStock === 0) {
+    ctx.fillStyle = "rgba(255,60,60,0.8)";
+    ctx.font = "bold 9px 'Courier New'";
+    ctx.fillText("VIDE", panX + 70, panY + 28);
+  }
+
+  // Flash vert de rechargement
+  if(missileReloadFlash > 0) {
+    missileReloadFlash--;
+    const a = missileReloadFlash / 40;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "rgba(0,255,120,0.3)";
+    ctx.fillRect(panX, panY, cols*(iconW+gap)+gap, 36);
+    ctx.strokeStyle = "#00ff88";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(panX, panY, cols*(iconW+gap)+gap, 36);
+    ctx.restore();
+    // Texte "+1 MISSILE"
+    ctx.fillStyle = `rgba(0,255,150,${a})`;
+    ctx.font = "bold 10px 'Courier New'";
+    ctx.fillText("+1 MISSILE", panX + 4, panY - 4);
+  }
+}
+
+/* ======================================================
+   EXPLOSION
+====================================================== */
+let explosion = null;
+const EXPLOSION_DURATION = 110;
+
+function spawnExplosion(cx, cy) {
+  const parts = [];
+  // Gros éclats incandescents avec traînée
+  for(let i = 0; i < 32; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.5 + Math.random() * 5.5;
+    const cols  = ["#ff8800","#ffcc00","#ff4400","#ffffff","#ff2200","#ffee88"];
+    parts.push({
+      x:cx, y:cy,
+      vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed - 1.5,
+      life:0.85+Math.random()*0.15, decay:0.012+Math.random()*0.018,
+      size:3+Math.random()*9, color:cols[Math.random()*cols.length|0],
+      type:"ember", grav:0.08+Math.random()*0.12, trail:[]
+    });
+  }
+  // Fumée noire
+  for(let i = 0; i < 18; i++) {
+    const angle = Math.random()*Math.PI*2, speed = 0.4+Math.random()*2.2;
+    parts.push({
+      x:cx+(Math.random()-.5)*20, y:cy+(Math.random()-.5)*10,
+      vx:Math.cos(angle)*speed, vy:Math.sin(angle)*speed-.5,
+      life:0.7+Math.random()*0.3, decay:0.006+Math.random()*0.008,
+      size:10+Math.random()*22, color:null, type:"smoke", grav:-0.02
+    });
+  }
+  // Étincelles blanches rapides
+  for(let i = 0; i < 24; i++) {
+    const angle = Math.random()*Math.PI*2, speed = 4+Math.random()*8;
+    parts.push({
+      x:cx, y:cy,
+      vx:Math.cos(angle)*speed, vy:Math.sin(angle)*speed-2,
+      life:0.6+Math.random()*0.4, decay:0.025+Math.random()*0.03,
+      size:1.5+Math.random()*2, color:"#ffffff", type:"spark", grav:0.15
+    });
+  }
+  // Débris d'avion qui tournent
+  for(let i = 0; i < 10; i++) {
+    const angle = Math.random()*Math.PI*2, speed = 1+Math.random()*3;
+    parts.push({
+      x:cx, y:cy,
+      vx:Math.cos(angle)*speed, vy:Math.sin(angle)*speed-2,
+      life:1.0, decay:0.008+Math.random()*0.01,
+      size:4+Math.random()*8, color:"#7a8898", type:"debris",
+      grav:0.12, rot:Math.random()*Math.PI*2, rotV:(Math.random()-.5)*0.25
+    });
+  }
+  explosion = { x:cx, y:cy, tick:0, parts };
+}
+
+function updateExplosion() {
+  if(!explosion) return;
+  explosion.tick++;
+
+  // Flash blanc initial
+  if(explosion.tick < 6) {
+    const a = 1 - explosion.tick/6;
+    ctx.fillStyle = `rgba(255,220,100,${a*0.85})`;
+    ctx.fillRect(0,0,W,H);
+  }
+  // Ondes de choc
+  if(explosion.tick < 22) {
+    const r = explosion.tick * 6;
+    const a = 1 - explosion.tick/22;
+    ctx.strokeStyle = `rgba(255,180,50,${a*0.7})`; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(explosion.x,explosion.y,r,0,Math.PI*2); ctx.stroke();
+    if(explosion.tick > 4) {
+      ctx.strokeStyle = `rgba(255,100,20,${a*0.35})`; ctx.lineWidth=7;
+      ctx.beginPath(); ctx.arc(explosion.x,explosion.y,r*0.55,0,Math.PI*2); ctx.stroke();
+    }
+  }
+
+  // Particules
+  for(let i=explosion.parts.length-1; i>=0; i--) {
+    const p = explosion.parts[i];
+    p.vx*=0.97; p.vy+=p.grav; p.vy*=0.98;
+    p.x+=p.vx; p.y+=p.vy;
+    p.life-=p.decay;
+    if(p.life<=0){ explosion.parts.splice(i,1); continue; }
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0,p.life);
+
+    if(p.type==="smoke") {
+      const r = p.size*(1.5-p.life*0.5);
+      const g2 = Math.floor(p.life*40)|0;
+      ctx.fillStyle=`rgb(${g2},${g2},${g2})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+
+    } else if(p.type==="ember") {
+      p.trail.push({x:p.x,y:p.y});
+      if(p.trail.length>5) p.trail.shift();
+      for(let t=0;t<p.trail.length-1;t++){
+        ctx.globalAlpha=(t/p.trail.length)*p.life*0.5;
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.trail[t].x,p.trail[t].y,p.size*0.25*(t/p.trail.length),0,Math.PI*2); ctx.fill();
+      }
+      ctx.globalAlpha=p.life;
+      ctx.fillStyle=p.color;
+      ctx.shadowColor=p.color; ctx.shadowBlur=p.size*1.5;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.size*0.5,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0;
+
+    } else if(p.type==="spark") {
+      ctx.strokeStyle=p.color; ctx.lineWidth=1.5;
+      ctx.shadowColor="#ffffff"; ctx.shadowBlur=4;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p.x-p.vx*3,p.y-p.vy*3); ctx.stroke();
+      ctx.shadowBlur=0;
+
+    } else if(p.type==="debris") {
+      p.rot+=p.rotV;
+      ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.fillStyle=p.color;
+      ctx.fillRect(-p.size/2,-p.size/4,p.size,p.size/2);
+    }
+    ctx.restore();
+  }
+
+  // Transition vers gameover
+  if(explosion.tick>=EXPLOSION_DURATION) {
+    explosion=null;
+    state="gameover";
+  }
+}
+
+/* ======================================================
+   PAUSE
+====================================================== */
+let paused = false;
+
+function drawPauseScreen() {
+  ctx.fillStyle = "rgba(4,8,20,0.78)";
+  ctx.fillRect(0,0,W,H);
+
+  const pw=340, ph=270, px=W/2-pw/2, py=H/2-ph/2;
+  ctx.fillStyle="rgba(8,16,35,0.96)";
+  ctx.fillRect(px,py,pw,ph);
+  ctx.strokeStyle="#335577"; ctx.lineWidth=2;
+  ctx.strokeRect(px,py,pw,ph);
+
+  // Coins décoratifs
+  const cs=14;
+  [[px,py],[px+pw,py],[px,py+ph],[px+pw,py+ph]].forEach(([cx2,cy2],i)=>{
+    const sx=i%2===0?1:-1, sy=i<2?1:-1;
+    ctx.strokeStyle="#4488aa"; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(cx2+sx*cs,cy2); ctx.lineTo(cx2,cy2); ctx.lineTo(cx2,cy2+sy*cs);
+    ctx.stroke();
+  });
+
+  ctx.textAlign="center";
+
+  // Icône pause (deux barres)
+  ctx.fillStyle="#4499cc";
+  ctx.fillRect(W/2-18, py+20, 13, 38);
+  ctx.fillRect(W/2+5,  py+20, 13, 38);
+
+  ctx.fillStyle="#ddeeff";
+  ctx.font="bold 28px 'Courier New'";
+  ctx.fillText("PAUSE", W/2, py+100);
+
+  ctx.strokeStyle="rgba(80,130,170,0.35)"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(px+28,py+115); ctx.lineTo(px+pw-28,py+115); ctx.stroke();
+
+  ctx.fillStyle="#88aacc";
+  ctx.font="13px 'Courier New'";
+  ctx.fillText("Appuyez sur  P  pour reprendre", W/2, py+148);
+  ctx.fillText("Cliquez pour reprendre", W/2, py+168);
+  ctx.fillStyle="#446688";
+  ctx.font="11px 'Courier New'";
+  ctx.fillText("F / MAJ / Clic droit → Tirer un missile", W/2, py+186);
+
+  ctx.strokeStyle="rgba(80,130,170,0.2)"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(px+28,py+198); ctx.lineTo(px+pw-28,py+198); ctx.stroke();
+
+  ctx.fillStyle="#556677";
+  ctx.font="12px 'Courier New'";
+  ctx.fillText(`Score en cours : ${score} pts`, W/2, py+214);
+  const g=getGrade(score);
+  ctx.fillStyle=g.color;
+  ctx.fillText(`Grade actuel : ${g.label}`, W/2, py+236);
+  if(g.stars>0) drawGradeStars(W/2, py+254, Math.min(g.stars,5), g.color, 6);
+
+  ctx.textAlign="left";
+}
+
+function triggerGameOver() {
+  const cx = jet.x + JW/2;
+  const cy = jet.y + JH/2;
+  spawnExplosion(cx, cy);
+  deathGrade = getGrade(score);
+  if(score > highScore) {
+    highScore = score;
+    localStorage.setItem("rafaleHS3", highScore);
+  }
+  state = "dying";
+}
+
+function loop(ts) {
+  // FPS
+  const dt = ts - lastTs; lastTs = ts;
+  if(dt > 0) { fpsBuf.push(1000/dt); if(fpsBuf.length>30) fpsBuf.shift(); }
+  if(frame%30===0) {
+    const avg = fpsBuf.reduce((a,b)=>a+b,0)/fpsBuf.length;
+    document.getElementById("fpsOut").textContent = (avg|0)+" FPS";
+  }
+
+  // Fond
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+
+  // Particules
+  updateParticles();
+
+  if(state === "play") {
+    if(paused) {
+      // Scène figée + overlay pause
+      for(const t of towers) drawRadarTower(t);
+      renderJet();
+      drawHUD();
+      drawGradeHUD();
+      drawMissileHUD();
+      drawPauseScreen();
+      frame++;
+      requestAnimationFrame(loop);
+      return;
+    }
+
+    /* -- PHYSIQUE -- */
+    jet.vy += jet.gravity;
+    jet.y  += jet.vy;
+
+    /* -- FUMÉE -- */
+    if(frame % 3 === 0) spawnSmoke();
+
+    /* -- TOURS -- */
+    towerInterval = Math.max(88, 130 - (score/5|0)*5);
+    if(frame % towerInterval === 0) createTower();
+
+    const speed = Math.min(10, 3 + score*0.07);
+    for(let i=towers.length-1; i>=0; i--) {
+      towers[i].x -= speed;
+      if(!towers[i].passed && towers[i].x + TOWER_W < jet.x) {
+        const oldGrade = getGrade(score);
+        score++;
+        towers[i].passed = true;
+        const newGrade = getGrade(score);
+        if(newGrade.min > oldGrade.min) {
+          gradeUpMsg = 120;
+        }
+        if(score === 50) {
+          enemyZoneWarning = 220;
+        }
+        if(score === 30) {
+          enemyZoneWarning = 220;
+          killedByEnemy = false; // reset flag, on réutilise la même variable de warning
+        }
+      }
+      if(towers[i].x + TOWER_W + 10 < 0) towers.splice(i,1);
+    }
+
+    /* -- RENDU TOURS -- */
+    for(const t of towers) drawRadarTower(t);
+
+    /* -- ENNEMIS SU-27 -- */
+    updateEnemies();
+
+    /* -- MISSILES DU RAFALE -- */
+    updateMissiles();
+
+    /* -- EXPLOSIONS ENNEMIES -- */
+    updateEnemyExplosions();
+
+    /* -- AVION JOUEUR -- */
+    renderJet();
+    drawHitbox();
+
+    /* -- COLLISIONS -- */
+    if(jet.y < -10 || jet.y + JH > GROUND_Y + 5) {
+      killedByEnemy = false;
+      triggerGameOver();
+    }
+    for(const t of towers) {
+      if(checkCollision(t)) { killedByEnemy = false; triggerGameOver(); break; }
+    }
+    for(const e of enemies) {
+      if(enemyCollidesWithJet(e)) { killedByEnemy = true; triggerGameOver(); break; }
+    }
+
+    drawEnemyAlert();
+
+    /* -- ALERTE ZONE ENNEMIE (passage à 50 pts) -- */
+    if(enemyZoneWarning > 0) {
+      enemyZoneWarning--;
+      const alpha = Math.min(1, enemyZoneWarning/40);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = "rgba(60,0,0,0.85)";
+      ctx.fillRect(W/2-230, H/2-38, 460, 76);
+      ctx.strokeStyle = "#ff2222";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(W/2-230, H/2-38, 460, 76);
+      ctx.fillStyle = "#ff3333";
+      ctx.font = "bold 18px 'Courier New'";
+      ctx.textAlign = "center";
+      ctx.fillText(score >= 50 ? "⚠  ZONE DE COMBAT AÉRIEN  ⚠" : "⚠  HÉLICOPTÈRES ENNEMIS  ⚠", W/2, H/2-10);
+      ctx.fillStyle = "#ffaa44";
+      ctx.font = "13px 'Courier New'";
+      ctx.fillText(score >= 50 ? "Des Su-27 Flanker russes ont été détectés !" : "Des Mi-24 Hind russes approchent !", W/2, H/2+16);
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+
+    drawHUD();
+    drawGradeHUD();
+    drawMissileHUD();
+    frame++;
+
+  } else if(state === "start") {
+    for(const t of towers) drawRadarTower(t);
+    renderJet();
+    drawHUD();
+    drawGradeHUD();
+    drawStartScreen();
+    frame++;
+
+  } else if(state === "gameover") {
+    for(const t of towers) drawRadarTower(t);
+    renderJet();
+    drawHUD();
+    drawGradeHUD();
+    drawGameOverScreen();
+    frame++;
+
+  } else if(state === "dying") {
+    // Le jeu est figé, on affiche l'explosion sur la scène gelée
+    for(const t of towers) drawRadarTower(t);
+    // Pas de renderJet : le jet a disparu dans l'explosion
+    updateExplosion();
+    // Texte "TOUCHÉ !" pendant l'anim
+    if(explosion) {
+      const alpha = Math.min(1, explosion.tick/20);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ff3333";
+      ctx.font = "bold 36px 'Courier New'";
+      ctx.shadowColor = "#ff0000"; ctx.shadowBlur = 20;
+      ctx.fillText("TOUCHÉ !", W/2, 80);
+      ctx.shadowBlur = 0;
+      if(killedByEnemy) {
+        ctx.fillStyle = "#ffaa44";
+        ctx.font = "14px 'Courier New'";
+        ctx.fillText("Abattu par un Su-27 Flanker", W/2, 108);
+      }
+      ctx.restore();
+      ctx.textAlign = "left";
+    }
+    drawHUD();
+    drawGradeHUD();
+    frame++;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+/* ======================================================
+   INPUT
+====================================================== */
+function handleInput() {
+  if(state === "play") {
+    if(paused) {
+      paused = false; // reprendre
+    } else {
+      jet.vy = jet.lift;
+    }
+  } else if(state === "start") {
+    state = "play";
+    frame = 0;
+    score = 0;
+  } else if(state === "gameover") {
+    state = "play";
+    score = 0;
+    towers = [];
+    particles = [];
+    enemies = [];
+    enemySpawnTimer = 0;
+    heloSpawnTimer = 0;
+    killedByEnemy = false;
+    explosion = null;
+    paused = false;
+    missiles = [];
+    missileStock = 6;
+    missileCooldown = 0;
+    missileReloadFlash = 0;
+    enemyExplosions = [];
+    towerInterval = 130;
+    frame = 0;
+    resetJet();
+  }
+  // En état "dying" : on ne fait rien, on attend la fin de l'explosion
+}
+
+function handlePauseKey() {
+  if(state === "play") {
+    paused = !paused;
+  }
+}
+
+document.addEventListener("click", handleInput);
+document.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  fireMissile();
+});
+document.addEventListener("keydown", e => {
+  if(e.code === "KeyP") {
+    e.preventDefault();
+    handlePauseKey();
+    return;
+  }
+  if(e.code === "Escape") {
+    e.preventDefault();
+    handlePauseKey();
+    return;
+  }
+  if(e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
+    e.preventDefault();
+    fireMissile();
+    return;
+  }
+  if(e.code === "Space" || e.code === "ArrowUp") {
+    e.preventDefault();
+    handleInput();
+  }
+});
+</script>
+</body>
+</html>
